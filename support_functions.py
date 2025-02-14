@@ -205,6 +205,10 @@ def scrape_all_mogi():
             if href and not href.startswith("http"):
                 href = "https://mogi.vn" + href
             if href:
+                # Nếu URL không chứa chuỗi "-id" thì bỏ qua (ignore)
+                if "-id" not in href:
+                    print(f"Ignoring URL (not standard page): {href}")
+                    continue
                 job_urls.append(href)
 
         print(f"Found {len(job_urls)} tin ở trang 1.")
@@ -229,23 +233,68 @@ def scrape_all_mogi():
 # PHẦN C: XỬ LÝ DỮ LIỆU (Transform)
 # ---------------------------
 
+def parse_price(raw_price):
+    """
+    Chuyển đổi chuỗi giá có thể chứa "triệu" và "nghìn" thành giá đầy đủ (VND).
+
+    Ví dụ:
+      "6 triệu 200 nghìn" -> 6*1e6 + 200*1e3 = 6200000
+      "6 triệu" -> 6000000
+      "2.1 triệu" -> 2100000
+      "22 triệu" -> 22000000
+    """
+    price_lower = raw_price.lower()
+    trieu_value = 0.0
+    nghin_value = 0.0
+
+    # Tìm số trước từ "triệu"
+    match_trieu = re.search(r'(\d+(?:[.,]\d+)?)\s*triệu', price_lower)
+    if match_trieu:
+        trieu_value = float(match_trieu.group(1).replace(',', '.'))
+
+    # Tìm số trước từ "nghìn" hoặc "ngàn"
+    match_nghin = re.search(r'(\d+(?:[.,]\d+)?)\s*(nghìn|ngàn)', price_lower)
+    if match_nghin:
+        nghin_value = float(match_nghin.group(1).replace(',', '.'))
+
+    price_vnd = trieu_value * 1e6 + nghin_value * 1e3
+    return price_vnd
+
+
 def transform_one_tin(row):
+    """
+    Nhận vào một row (list) chứa:
+      [bedroom, restroom, location, price_str, square_str, content, date, url, lat, lon]
+    Và trả về dictionary với các trường số cần thiết cho mô hình.
+    """
     bedroom, restroom = row[0], row[1]
     location, price_str, square_str = row[2], row[3], row[4]
     content, date_, url_ = row[5], row[6], row[7]
     lat, lon = row[8], row[9]
 
-    # Xử lý giá
-    try:
-        price_str = str(price_str).replace(" ", "").replace("triệu", "").replace(",", "")
-        price_m = float(price_str)
-    except:
-        price_m = np.nan
+    raw_price = str(price_str).strip()
+    price_lower = raw_price.lower()
+
+    if "triệu" in price_lower or "nghìn" in price_lower or "ngàn" in price_lower:
+        price_vnd = parse_price(raw_price)
+    else:
+        # Nếu không chứa từ khóa, cố gắng chuyển đổi chuỗi thành số.
+        try:
+            # Nếu chuỗi có dạng số khoa học (ví dụ "6e-06") hoặc số nhỏ, giả sử nó là số triệu
+            num = float(raw_price)
+            if num < 1000:  # Giả sử nếu nhỏ hơn 1000, đó là giá trị theo đơn vị "triệu"
+                price_vnd = num * 1e6
+            else:
+                price_vnd = num
+        except:
+            price_vnd = np.nan
 
     # Xử lý diện tích
     try:
-        square_str = str(square_str).replace(" ", "").replace("m²", "").replace(",", ".")
-        sq = float(re.findall(r'\d+\.?\d*', square_str)[0])
+        # Loại bỏ các ký tự "m²" hoặc "m2", chuyển dấu phẩy thành dấu chấm, và loại bỏ khoảng trắng thừa
+        square_str_clean = str(square_str).replace("m²", "").replace("m2", "").strip()
+        square_str_clean = square_str_clean.replace(",", ".")
+        sq = float(square_str_clean)
     except:
         sq = np.nan
 
@@ -281,18 +330,6 @@ def transform_one_tin(row):
         lat, lon = geocode_location(location)
         time.sleep(1)
 
-    # Tiếp tục ép kiểu giá về triệu VND
-    try:
-        p = float(price_str)
-    except:
-        p = np.nan
-    price_m = p / 1e6  # chuyển VND -> triệu VND
-
-    try:
-        sq = float(re.sub(r"[^\d.]", "", str(square_str)))
-    except:
-        sq = np.nan
-
     dist_center = distance_to_center(lat, lon)
 
     hosp_count, hosp_avg = get_count_avgdist(lat, lon, "hospital", 5000)
@@ -300,7 +337,7 @@ def transform_one_tin(row):
     market_count, market_avg = calculate_supermarket_stats(lat, lon, radius_km=5)
 
     data = {
-        "price (million VND)": price_m,
+        "price (million VND)": price_vnd,
         "square (m2)": sq,
         "bedroom": bd,
         "restroom": rr,
