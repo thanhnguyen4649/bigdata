@@ -3,4 +3,4 @@ run steps:
 2. kafka-server-start /opt/homebrew/etc/kafka/server.properties
 3. python web_scraper_kafka.py
 4. python kafka_consumer.py
-5. python spark_kafka_consumer.py hoặc spark-submit spark_kafka_consumer.py
+5. python spark_kafka_consumer.py or spark-submit spark_kafka_consumer.py
